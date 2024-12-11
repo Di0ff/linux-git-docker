@@ -1,21 +1,136 @@
 package main
 
 import (
-  "fmt"
+	"bufio"
+	"fmt"
+	"os"
+	"strconv"
+	"time"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
+const (
+	bufferSize    = 5
+	flushInterval = 3 * time.Second
+)
 
 func main() {
-  //TIP <p>Press <shortcut actionId="ShowIntentionActions"/> when your caret is at the underlined text
-  // to see how GoLand suggests fixing the warning.</p><p>Alternatively, if available, click the lightbulb to view possible fixes.</p>
-  s := "gopher"
-  fmt.Println("Hello and welcome, %s!", s)
+	done := make(chan struct{})
+	defer close(done)
 
-  for i := 1; i <= 5; i++ {
-	//TIP <p>To start your debugging session, right-click your code in the editor and select the Debug option.</p> <p>We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-	// for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.</p>
-	fmt.Println("i =", 100/i)
-  }
+	source := generateNumbers(done)
+
+	positiveNumbers := removeNegative(done, source)
+	multiplesOfThree := filterMultiplesOfThree(done, positiveNumbers)
+	buffered := buffer(done, multiplesOfThree)
+
+	consume(buffered)
+}
+
+// Источник данных (чтение с консоли)
+func generateNumbers(done <-chan struct{}) <-chan int {
+	out := make(chan int)
+	go func() {
+		defer close(out)
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			select {
+			case <-done:
+				return
+			default:
+				text := scanner.Text()
+				num, err := strconv.Atoi(text)
+				if err != nil {
+					fmt.Println("Введите корректное число")
+					continue
+				}
+				out <- num
+			}
+		}
+	}()
+	return out
+}
+
+// Фильтрация отрицательных чисел
+func removeNegative(done <-chan struct{}, in <-chan int) <-chan int {
+	positive := make(chan int)
+	go func() {
+		defer close(positive)
+		for i := range in {
+			select {
+			case <-done:
+				return
+			default:
+				if i >= 0 {
+					positive <- i
+				}
+			}
+		}
+	}()
+	return positive
+}
+
+// Фильтрация чисел, не кратных 3 и исключение 0
+func filterMultiplesOfThree(done <-chan struct{}, in <-chan int) <-chan int {
+	multiplesOfThree := make(chan int)
+	go func() {
+		defer close(multiplesOfThree)
+		for i := range in {
+			select {
+			case <-done:
+				return
+			default:
+				if i%3 == 0 && i != 0 {
+					multiplesOfThree <- i
+				}
+			}
+		}
+	}()
+	return multiplesOfThree
+}
+
+// Буферизация данных в кольцевом буфере
+func buffer(done <-chan struct{}, in <-chan int) <-chan int {
+	out := make(chan int)
+	buffer := make([]int, 0, bufferSize)
+
+	go func() {
+		defer close(out)
+		ticker := time.NewTicker(flushInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case i, ok := <-in:
+				if !ok {
+					flushBuffer(out, buffer)
+					return
+				}
+				buffer = append(buffer, i)
+				if len(buffer) >= bufferSize {
+					flushBuffer(out, buffer)
+					buffer = buffer[:0]
+				}
+			case <-ticker.C:
+				flushBuffer(out, buffer)
+				buffer = buffer[:0]
+			}
+		}
+	}()
+	return out
+}
+
+// Опустошение буфера
+func flushBuffer(out chan<- int, buffer []int) {
+	for _, i := range buffer {
+		out <- i
+	}
+}
+
+// Потребитель данных
+func consume(in <-chan int) {
+	for i := range in {
+		fmt.Printf("Получены данные: %d\n", i)
+	}
 }
